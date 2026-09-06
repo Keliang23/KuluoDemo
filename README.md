@@ -1,25 +1,55 @@
-# 推箱子原型 / Sokoban Demo
+# 推箱子原型
 
-Unity **2022.3.51f1** · 2D Built-In Render Pipeline.
+使用 **Unity 2022.3.51f1** 和 **2D 内置渲染管线**制作的基础推箱子 Demo。目前包含一个简单关卡和游戏内地图编辑器，角色与箱子使用几何图形占位，尚未确定美术主题。
 
-Open `Assets/Scenes/SokobanDemo.unity` and press Play.
+## 打开与运行
 
-## First playable
+1. 克隆或下载本仓库。
+2. 在 Unity Hub 中添加仓库根目录（包含 `Assets`、`Packages` 和 `ProjectSettings` 的文件夹）。
+3. 使用 **Unity 2022.3.51f1** 打开项目，等待资源导入和脚本编译完成。
+4. 打开 `Assets/Scenes/SokobanDemo.unity`，点击 **Play** 运行。
 
-- One simple level, checked with a breadth-first solver. Neutral geometric player / box placeholders; no theme is decided.
-- WASD / arrows to move; Z / Backspace to undo; R to restart; Esc for pause menu.
-- One box per push; solid map boundaries; smooth movement; delivery feedback and synthesized audio.
-- Move / push counters, completion and restart.
-- In-game workshop: floor, wall, goal, box, and player brushes; drag to paint; right-click to erase.
-- Save / load one custom level as JSON under `Application.persistentDataPath/sokoban-custom-level.json`.
-- Playtesting uses a copy of the draft; returning to edit restores the design, not the moved boxes.
+地图在运行时绘制于 **Game** 视图中；**Scene** 视图中只有摄像机和控制器。项目保留了原始的 `SampleScene`，试玩时请使用 `SokobanDemo` 场景。
 
-The workshop checks map shape, spawn count, and box / goal counts. It does not claim arbitrary custom maps are solvable. Saving replaces the single custom save slot.
+## 玩法与操作
 
-## Code
+把所有箱子推到目标点上即可通关。玩家只能推箱子，不能拉箱子；每次只能推动一个箱子，墙壁和地图边界会阻挡移动。
 
-- `SokobanModel.cs`: level format, grid rules, snapshots and original demo levels.
-- `SokobanDemo.cs`: temporary immediate-mode UI, board drawing, input, audio and workshop.
-- `SokobanSetup.cs`: demo scene setup and rule / level validation. Run **Tools > Sokoban > Validate Demo**.
+| 按键 | 功能 |
+| --- | --- |
+| WASD / 方向键 | 移动与推箱子 |
+| Z / Backspace | 撤销上一步 |
+| R | 重新开始当前关卡 |
+| Esc | 打开或关闭暂停菜单 |
 
-Presentation is intentionally self-contained and uses generated shapes and sound, without downloaded art or packages. The board is drawn in the Game view during Play; the Scene view contains the camera and controller. The original SampleScene is preserved. This is a prototype; sprite / Tilemap presentation and a larger authored campaign can replace the temporary UI later.
+界面显示移动步数、推动次数和已到达目标点的箱子数量，并提供移动动画、通关反馈和简单音效。
+
+## 地图编辑器
+
+点击游戏中的 **「打开地图编辑器」** 即可编辑关卡。
+
+- 提供地板、墙壁、目标点、箱子和玩家五种画笔。
+- 鼠标左键绘制，拖动可连续绘制，右键擦除。
+- 目标点可以与箱子或玩家放在同一格。
+- 点击 **「试玩这一关」** 检查关卡；返回编辑时保留原始设计，不会把试玩中移动后的箱子位置写回地图。
+- 点击 **「保存到本机」** 或 **「读取保存」** 保存、恢复自定义关卡。
+
+自定义关卡以 JSON 格式保存在 `Application.persistentDataPath/sokoban-custom-level.json`。目前只有一个保存槽，再次保存会覆盖此前保存的自定义关卡。
+
+编辑器会检查地图尺寸、玩家出生点数量，以及箱子和目标点的数量是否一致。它不会自动判断自定义地图是否有解，需要通过试玩验证。
+
+## 代码结构
+
+| 文件 | 用途 |
+| --- | --- |
+| `Assets/Scripts/SokobanModel.cs` | 关卡数据、格子移动规则、状态快照和基础关卡 |
+| `Assets/Scripts/SokobanDemo.cs` | 临时界面、地图绘制、输入、音效和地图编辑器 |
+| `Assets/Editor/SokobanSetup.cs` | Demo 场景创建、规则检查和关卡可解性验证 |
+
+在 Unity 菜单中选择 **Tools > Sokoban > Validate Demo** 可运行验证，包括基础关卡求解、推箱规则、墙壁与边界阻挡、撤销状态恢复和关卡 JSON 序列化。
+
+## 当前范围
+
+这是用于验证基础玩法和地图编辑流程的原型。画面使用临时即时模式界面和程序生成的图形，音效也由程序生成；后续可以替换为精灵或 Tilemap 表现。
+
+仓库包含源码、资源及项目配置；`Library`、`Temp`、日志和本地用户设置等生成内容已通过 `.gitignore` 排除。
