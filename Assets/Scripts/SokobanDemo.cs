@@ -5,28 +5,44 @@ using UnityEngine;
 
 namespace Kuluo.Sokoban
 {
-    // A self-contained first playable. The board rules are independent of its temporary presentation.
-    public class SokobanDemo : MonoBehaviour
+    public partial class SokobanDemo : MonoBehaviour
     {
         const float CanvasWidth = 1280, CanvasHeight = 800;
+        enum Page { Menu, Home, Play, Library, Editor }
+        Page page = Page.Menu;
         readonly Color background = Hex("101C29"), panel = Hex("192A3B"), muted = Hex("96ABBD");
         readonly Color ink = Hex("EAF2F5"), mint = Hex("69DFC0"), gold = Hex("F2BD69");
         readonly Stack<BoardState.Snapshot> history = new Stack<BoardState.Snapshot>();
+        readonly List<LevelData> editorUndo = new List<LevelData>();
         BoardState board;
         LevelData current, draft;
-        int levelIndex, tool;
-        bool editing, testing, menu, mutedAudio;
-        string notice = "";
-        float noticeUntil, moveTime, nextRepeat;
+        CampaignProgress progress;
+        LevelLibrary library = new LevelLibrary();
+        SokobanStorage storage;
+        int levelIndex, tool, desiredWidth = 8, desiredHeight = 6, libraryPage;
+        bool editing, testing, menu, dirty, libraryWritable = true, progressWritable = true, resetFocus;
+        bool hasCampaignSession;
+        string draftId, selectedId, notice = "", savedDraftJson = "";
+        float noticeUntil, moveTime, nextRepeat, moveDuration = .105f;
         Vector2Int heldDirection;
         Vector2 fromPlayer;
         Vector2Int[] fromBoxes;
         Font font;
         Texture2D playerIcon;
-        GUIStyle textStyle;
+        GUIStyle textStyle, fieldStyle;
         AudioSource speaker;
+        AudioSource music;
+        AudioClip buttonClip;
+        bool settingsOpen, effectsPreviewPending;
+        float musicVolume, effectsVolume;
         AudioClip stepClip, pushClip, winClip;
-        string SavePath => Path.Combine(Application.persistentDataPath, "sokoban-custom-level.json");
+        Action confirmAction, discardAction;
+        string confirmText;
+        bool filePicker, exporting;
+        string directoryText, filename = "level.json", fileError = "";
+        string[] folders = new string[0], files = new string[0];
+        Vector2 fileScroll;
+        bool OverlayOpen => settingsOpen || menu || confirmAction != null || discardAction != null || filePicker;
 
         void Awake()
         {
@@ -42,16 +58,59 @@ namespace Kuluo.Sokoban
             stepClip = Tone("step", 330, .055f);
             pushClip = Tone("push", 180, .09f);
             winClip = Tone("complete", 660, .3f);
-            LoadLevel(0);
+            buttonClip = Resources.Load<AudioClip>("Audio/ButtonClick");
+            effectsVolume = Mathf.Clamp01(PlayerPrefs.GetFloat("Sokoban.EffectsVolume", PlayerPrefs.GetInt("Sokoban.MuteEffects", 0) == 1 ? 0 : .65f));
+            musicVolume = Mathf.Clamp01(PlayerPrefs.GetFloat("Sokoban.MusicVolume", PlayerPrefs.GetInt("Sokoban.MuteMusic", 0) == 1 ? 0 : .4f));
+            music = gameObject.AddComponent<AudioSource>();
+            music.clip = Resources.Load<AudioClip>("Audio/Puzzling");
+            music.loop = true;
+            music.volume = musicVolume * .3f;
+            if (music.clip != null) music.Play();
+            storage = new SokobanStorage(Application.persistentDataPath);
+            try
+            {
+                progress = storage.LoadProgress(DemoLevels.All.Length);
+            }
+            catch (Exception e)
+            {
+                progressWritable = false;
+                progress = new CampaignProgress();
+                progress.Normalize(DemoLevels.All.Length);
+                Notify(e.Message);
+            }
+            try { library = storage.LoadLibrary(); }
+            catch (Exception e) { libraryWritable = false; Notify(e.Message + " 保存已暂停，以保护原文件。"); }
+            if (!string.IsNullOrEmpty(storage.RecoveryNotice)) Notify(storage.RecoveryNotice);
+            current = DemoLevels.All[0].Copy();
+            ResetBoard();
+            page = Page.Menu;
         }
 
         void Update()
         {
-            if (Input.GetKeyDown(KeyCode.Escape)) { menu = !menu; heldDirection = Vector2Int.zero; }
-            if (menu || editing) return;
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                heldDirection = Vector2Int.zero;
+                if (settingsOpen) { CloseSettings(); return; }
+                if (confirmAction != null) { confirmAction = null; return; }
+                if (discardAction != null) { discardAction = null; return; }
+                if (filePicker) { filePicker = false; return; }
+                if (page == Page.Play) menu = !menu;
+                else if (page == Page.Editor) LeaveEditor(() => Go(Page.Library));
+                else if (page == Page.Menu) ConfirmQuit();
+                else Go(Page.Menu);
+                return;
+            }
+            if (OverlayOpen) return;
+            if (page == Page.Editor)
+            {
+                if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.Z)) UndoEdit();
+                return;
+            }
+            if (page != Page.Play) return;
             if (Input.GetKeyDown(KeyCode.Z) || Input.GetKeyDown(KeyCode.Backspace)) Undo();
-            if (Input.GetKeyDown(KeyCode.R)) Restart();
-            if (board.Won) return;
+            if (Input.GetKeyDown(KeyCode.R)) ResetBoard();
+            if (board.Won || Time.unscaledTime < moveTime + moveDuration) return;
             Vector2Int direction = Vector2Int.zero;
             if (Input.GetKey(KeyCode.LeftArrow) || Input.GetKey(KeyCode.A)) direction = Vector2Int.left;
             else if (Input.GetKey(KeyCode.RightArrow) || Input.GetKey(KeyCode.D)) direction = Vector2Int.right;
@@ -67,12 +126,66 @@ namespace Kuluo.Sokoban
             }
         }
 
+        void Go(Page target)
+        {
+            page = target;
+            editing = target == Page.Editor;
+            menu = false;
+            heldDirection = Vector2Int.zero;
+            resetFocus = true;
+        }
+
         void LoadLevel(int index)
         {
+            if (!progress.CanPlay(index)) { Notify("请先完成前一关。"); return; }
+            if (hasCampaignSession && levelIndex == index && !board.Won) { Go(Page.Play); return; }
+            hasCampaignSession = true;
             levelIndex = index;
             current = DemoLevels.All[index].Copy();
-            editing = testing = menu = false;
+            testing = false;
+            progress.lastPlayed = index;
+            SaveProgress();
+            Go(Page.Play);
             ResetBoard();
+        }
+
+        void StartGame()
+        {
+            hasCampaignSession = false;
+            LoadLevel(0);
+        }
+
+        void ConfirmQuit() { Ask("确定退出游戏吗？", QuitGame); }
+        void QuitGame()
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
+        }
+
+        void CloseSettings()
+        {
+            settingsOpen = false;
+            effectsPreviewPending = false;
+            SaveAudioSettings();
+        }
+
+        void SaveAudioSettings()
+        {
+            PlayerPrefs.SetFloat("Sokoban.MusicVolume", musicVolume);
+            PlayerPrefs.SetFloat("Sokoban.EffectsVolume", effectsVolume);
+            PlayerPrefs.Save();
+        }
+
+        void OnApplicationQuit() { SaveAudioSettings(); }
+
+        void SaveProgress()
+        {
+            if (!progressWritable) { Notify("进度文件读取失败，本次进度暂不写入。"); return; }
+            try { storage.SaveProgress(progress); }
+            catch (Exception e) { Notify("进度保存失败：" + e.Message); }
         }
 
         void ResetBoard()
@@ -81,7 +194,6 @@ namespace Kuluo.Sokoban
             history.Clear();
             SnapAnimation();
             heldDirection = Vector2Int.zero;
-            notice = "";
         }
 
         void SnapAnimation()
@@ -93,19 +205,21 @@ namespace Kuluo.Sokoban
 
         void Move(Vector2Int direction)
         {
-            if (board.Won || editing || menu) return;
+            if (board.Won || page != Page.Play || OverlayOpen) return;
             var previous = board.Capture();
             if (!board.TryMove(direction)) return;
             history.Push(previous);
             fromPlayer = previous.player;
             fromBoxes = previous.boxes;
+            moveDuration = .105f;
+            for (int i = 0; i < board.Boxes.Count; i++)
+                moveDuration = Mathf.Max(moveDuration, .075f * Vector2Int.Distance(previous.boxes[i], board.Boxes[i]));
             moveTime = Time.unscaledTime;
             Play(board.Won ? winClip : board.Pushes > previous.pushes ? pushClip : stepClip);
             if (board.Won && !testing)
             {
-                int old = PlayerPrefs.GetInt("Sokoban.Best." + levelIndex, int.MaxValue);
-                PlayerPrefs.SetInt("Sokoban.Best." + levelIndex, Math.Min(old, board.Moves));
-                PlayerPrefs.Save();
+                progress.Complete(levelIndex, board.Moves);
+                SaveProgress();
             }
         }
 
@@ -115,162 +229,196 @@ namespace Kuluo.Sokoban
             board.Restore(history.Pop());
             SnapAnimation();
         }
+        void Notify(string message) { notice = message; noticeUntil = Time.unscaledTime + 7; }
 
-        void Restart() { ResetBoard(); }
-        void Notify(string message) { notice = message; noticeUntil = Time.unscaledTime + 5; }
-
-        void OpenEditor()
+        void BeginDraft(LevelData data, string id = null)
         {
-            draft = (testing && draft != null ? draft : current).Copy();
-            editing = true;
-            testing = menu = false;
+            draft = data.Copy();
+            draftId = id;
+            savedDraftJson = id == null ? "" : JsonUtility.ToJson(draft);
+            dirty = id == null;
+            desiredWidth = draft.rows[0].Length;
+            desiredHeight = draft.rows.Length;
+            editorUndo.Clear();
             tool = 1;
-            notice = "";
+            testing = false;
+            Go(Page.Editor);
+        }
+
+        void LeaveEditor(Action next)
+        {
+            if (dirty) discardAction = next;
+            else next();
         }
 
         void TestDraft()
         {
             string error = draft.Validate();
             if (error != null) { Notify(error); return; }
+            hasCampaignSession = false;
             current = draft.Copy();
-            current.title = "自定义关卡";
-            current.hint = "试玩你的设计。随时返回编辑，继续调整。";
-            editing = false;
             testing = true;
+            Go(Page.Play);
             ResetBoard();
         }
 
-        void SaveDraft()
+        bool SaveDraft()
         {
-            string error = draft.Validate();
-            if (error != null) { Notify(error); return; }
+            if (!libraryWritable) { Notify("关卡库读取失败，请先备份并修复原文件。可以导出当前设计。"); return false; }
             try
             {
-                Directory.CreateDirectory(Application.persistentDataPath);
-                File.WriteAllText(SavePath, JsonUtility.ToJson(draft, true));
-                Notify("已保存到本机。关闭游戏后也可以读取。");
+                string id = draftId ?? Guid.NewGuid().ToString("N");
+                var copy = library.Copy();
+                copy.Put(id, draft);
+                storage.SaveLibrary(copy);
+                library = copy;
+                draftId = selectedId = id;
+                draft.title = draft.title.Trim();
+                savedDraftJson = JsonUtility.ToJson(draft);
+                dirty = false;
+                Notify("关卡已保存。");
+                return true;
             }
-            catch (Exception e) { Notify("保存失败：" + e.Message); }
+            catch (Exception e) { Notify("保存失败：" + e.Message); return false; }
         }
 
-        void LoadDraft()
+        void DeleteLevel(SavedLevel selected)
         {
-            try
+            Ask("删除「" + selected.data.title + "」？其他关卡不受影响。", () =>
             {
-                if (!File.Exists(SavePath)) { Notify("还没有保存的关卡。先画一关吧。"); return; }
-                var loaded = JsonUtility.FromJson<LevelData>(File.ReadAllText(SavePath));
-                string error = loaded == null ? "关卡文件无效。" : loaded.Validate();
-                if (error != null) { Notify(error); return; }
-                draft = loaded;
-                Notify("已读取本机保存的关卡。");
-            }
-            catch (Exception e) { Notify("读取失败：" + e.Message); }
+                try
+                {
+                    var copy = library.Copy();
+                    copy.levels.RemoveAll(l => l.id == selected.id);
+                    storage.SaveLibrary(copy);
+                    library = copy;
+                    selectedId = null;
+                    Notify("关卡已删除。");
+                }
+                catch (Exception e) { Notify("删除失败：" + e.Message); }
+            });
+        }
+
+        void Ask(string message, Action action) { confirmText = message; confirmAction = action; }
+
+        void RememberEdit()
+        {
+            if (editorUndo.Count >= 100) editorUndo.RemoveAt(0);
+            editorUndo.Add(draft.Copy());
+        }
+
+        void UndoEdit()
+        {
+            if (editorUndo.Count == 0) return;
+            draft = editorUndo[editorUndo.Count - 1];
+            editorUndo.RemoveAt(editorUndo.Count - 1);
+            desiredWidth = draft.rows[0].Length;
+            desiredHeight = draft.rows.Length;
+            MarkDirty();
+        }
+        void MarkDirty() { dirty = JsonUtility.ToJson(draft) != savedDraftJson; }
+
+        void ResizeDraft()
+        {
+            if (desiredWidth == draft.rows[0].Length && desiredHeight == draft.rows.Length) return;
+            Action resize = () =>
+            {
+                RememberEdit();
+                draft = draft.Resized(desiredWidth, desiredHeight);
+                MarkDirty();
+                Notify("地图尺寸已调整；重叠区域保留，可撤销。");
+            };
+            if (desiredWidth < draft.rows[0].Length || desiredHeight < draft.rows.Length)
+                Ask("缩小地图会裁掉右侧或下方超出范围的内容。是否继续？", resize);
+            else resize();
         }
 
         void Paint(int x, int y, bool erase)
         {
             char c = draft.rows[y][x];
             bool goal = c == '.' || c == '*' || c == '+';
+            char terrain = draft.TerrainAt(x, y);
             char replacement;
-            if (erase || tool == 0) replacement = ' ';
-            else if (tool == 1) replacement = '#';
-            else if (tool == 2) replacement = c == '$' || c == '*' ? '*' : c == '@' || c == '+' ? '+' : '.';
-            else if (tool == 3) replacement = goal ? '*' : '$';
-            else
-            {
+            if (erase || tool == 0) { replacement = ' '; terrain = ' '; }
+            else if (tool == 1) { replacement = '#'; terrain = ' '; }
+            else if (tool >= 5) { replacement = c == '#' ? ' ' : c; terrain = tool == 5 ? 'I' : tool == 6 ? 'S' : 'D'; }
+            else replacement = tool == 2 ? c == '$' || c == '*' ? '*' : c == '@' || c == '+' ? '+' : '.' :
+                tool == 3 ? goal ? '*' : '$' : goal ? '+' : '@';
+            if (replacement == c && terrain == draft.TerrainAt(x, y)) return;
+            RememberEdit();
+            if (!erase && tool == 4)
                 for (int row = 0; row < draft.rows.Length; row++)
                     draft.rows[row] = draft.rows[row].Replace('@', ' ').Replace('+', '.');
-                replacement = goal ? '+' : '@';
-            }
             var chars = draft.rows[y].ToCharArray();
             chars[x] = replacement;
             draft.rows[y] = new string(chars);
+            draft.SetTerrain(x, y, terrain);
+            MarkDirty();
         }
 
-        void OnGUI()
+        void OpenFiles(bool export)
         {
-            if (board == null) return;
-            if (textStyle == null) textStyle = new GUIStyle(GUI.skin.label) { font = font, wordWrap = true, richText = false, padding = new RectOffset() };
-            var oldMatrix = GUI.matrix;
-            float scale = Mathf.Min(Screen.width / CanvasWidth, Screen.height / CanvasHeight);
-            GUI.matrix = Matrix4x4.TRS(new Vector3((Screen.width - CanvasWidth * scale) / 2, (Screen.height - CanvasHeight * scale) / 2), Quaternion.identity, new Vector3(scale, scale, 1));
-            Fill(new Rect(0, 0, 1280, 800), background);
-            Fill(new Rect(32, 35, 5, 42), mint);
-            Text(new Rect(52, 30, 460, 35), "推箱子原型", 29, ink, true);
-            Text(new Rect(53, 68, 470, 24), "SOKOBAN  /  BASIC PROTOTYPE", 12, muted);
-            if (Button(new Rect(1040, 38, 92, 38), mutedAudio ? "声音：关" : "声音：开", false, !menu)) mutedAudio = !mutedAudio;
-            if (Button(new Rect(1144, 38, 100, 38), "菜单  Esc", false, !menu)) menu = true;
-
-            if (!editing && !testing)
+            exporting = export;
+            filePicker = true;
+            filename = "level.json";
+            try
             {
-                for (int i = 0; i < DemoLevels.All.Length; i++)
+                Directory.CreateDirectory(storage.ExportDirectory);
+                directoryText = storage.ExportDirectory;
+                RefreshFiles();
+            }
+            catch (Exception e) { fileError = e.Message; }
+        }
+
+        void RefreshFiles()
+        {
+            try
+            {
+                string path = Path.GetFullPath(directoryText);
+                var foundFolders = Directory.GetDirectories(path);
+                var foundFiles = Directory.GetFiles(path, "*.json");
+                Array.Sort(foundFolders, StringComparer.OrdinalIgnoreCase);
+                Array.Sort(foundFiles, StringComparer.OrdinalIgnoreCase);
+                directoryText = path;
+                folders = foundFolders;
+                files = foundFiles;
+                fileScroll = Vector2.zero;
+                fileError = "";
+            }
+            catch (Exception e) { folders = files = new string[0]; fileError = "无法打开文件夹：" + e.Message; }
+        }
+
+        void ImportFile(string path)
+        {
+            try
+            {
+                var imported = storage.Import(path);
+                BeginDraft(imported);
+                filePicker = false;
+                Notify("已导入为新草稿；点击保存后加入我的关卡。");
+            }
+            catch (Exception e) { fileError = "导入失败：" + e.Message; }
+        }
+
+        void ExportFile()
+        {
+            if (string.IsNullOrWhiteSpace(filename) || filename.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            { fileError = "请输入有效的文件名，不要包含文件夹路径。"; return; }
+            try
+            {
+                string name = filename.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? filename : filename + ".json";
+                string path = Path.Combine(Path.GetFullPath(directoryText), name);
+                // Only allow exporting through the currently listed, existing directory.
+                if (!Directory.Exists(Path.GetDirectoryName(path))) { fileError = "请先打开一个存在的文件夹。"; return; }
+                Action write = () =>
                 {
-                    int best = PlayerPrefs.GetInt("Sokoban.Best." + i, -1);
-                    if (Button(new Rect(36 + i * 253, 110, 240, 44), (i + 1).ToString("00") + "  " + DemoLevels.All[i].title + (best >= 0 ? "  · 已完成" : ""), i == levelIndex, !menu)) LoadLevel(i);
-                }
+                    try { storage.Export(path, draft); filePicker = false; Notify("已导出：" + path); }
+                    catch (Exception e) { fileError = "导出失败：" + e.Message; }
+                };
+                if (File.Exists(path)) Ask("文件已存在，是否覆盖 " + name + "？", write);
+                else write();
             }
-            else Text(new Rect(38, 116, 760, 36), editing ? "地图编辑器  /  画一关自己的谜题" : "地图编辑器  /  试玩中", 22, mint, true);
-
-            Fill(new Rect(36, 174, 770, 556), panel);
-            DrawBoard(new Rect(58, 195, 726, 510));
-            Fill(new Rect(830, 110, 414, 620), panel);
-            if (editing) DrawEditor(); else DrawPlayPanel();
-            Text(new Rect(40, 749, 1150, 28), editing ? "左键绘制 / 拖动连续绘制    ·    右键擦除    ·    地图边界自动阻挡移动" : "WASD / 方向键 移动    ·    Z 撤销    ·    R 重开    ·    Esc 菜单", 15, muted);
-            if (!string.IsNullOrEmpty(notice) && Time.unscaledTime < noticeUntil)
-            {
-                Fill(new Rect(40, 678, 758, 45), Hex("284B51"));
-                Text(new Rect(55, 687, 725, 32), notice, 16, ink);
-            }
-            if (menu) DrawMenu();
-            GUI.matrix = oldMatrix;
-        }
-
-        void DrawPlayPanel()
-        {
-            Text(new Rect(858, 139, 350, 24), testing ? "CUSTOM LEVEL" : "BASIC LEVEL", 13, mint, true);
-            Text(new Rect(856, 179, 357, 47), current.title, 30, ink, true);
-            Text(new Rect(858, 243, 344, 78), current.hint, 18, muted);
-            Fill(new Rect(858, 331, 352, 1), Hex("33485A"));
-            Text(new Rect(858, 353, 110, 25), "步数", 15, muted);
-            Text(new Rect(981, 353, 100, 25), "推动", 15, muted);
-            Text(new Rect(1098, 353, 120, 25), "已送达", 15, muted);
-            Text(new Rect(858, 383, 100, 44), board.Moves.ToString("00"), 32, ink, true);
-            Text(new Rect(981, 383, 100, 44), board.Pushes.ToString("00"), 32, ink, true);
-            Text(new Rect(1098, 383, 120, 44), board.Docked + " / " + board.Boxes.Count, 30, mint, true);
-            if (Button(new Rect(858, 447, 170, 43), "撤销  Z", false, history.Count > 0 && !menu)) Undo();
-            if (Button(new Rect(1040, 447, 170, 43), "重开  R", false, !menu)) Restart();
-
-            if (board.Won)
-            {
-                Text(new Rect(858, 513, 350, 35), "通关！", 25, mint, true);
-                Text(new Rect(858, 553, 352, 35), "所有箱子都已到达目标点。", 16, muted);
-                if (Button(new Rect(858, 606, 352, 49), testing ? "返回编辑" : "重新开始", true, !menu))
-                {
-                    if (testing) OpenEditor(); else LoadLevel(0);
-                }
-            }
-            else
-            {
-                Text(new Rect(858, 520, 350, 42), "把每个箱子推到目标点上。", 17, ink);
-                Text(new Rect(858, 561, 350, 36), "只能推，不能拉；一次推动一个箱子。", 15, muted);
-                if (Button(new Rect(858, 613, 352, 46), testing ? "返回编辑" : "打开地图编辑器", false, !menu)) OpenEditor();
-            }
-            if (testing && Button(new Rect(858, 674, 352, 32), "退出试玩 · 返回第 1 关", false, !menu)) LoadLevel(0);
-        }
-
-        void DrawEditor()
-        {
-            Text(new Rect(858, 139, 350, 24), "LEVEL WORKSHOP", 13, mint, true);
-            Text(new Rect(856, 179, 360, 45), "地图编辑器", 27, ink, true);
-            Text(new Rect(858, 236, 346, 58), "选择画笔，然后在左侧地图上绘制。目标点可以放在箱子或玩家下面。", 16, muted);
-            string[] labels = { "地板 / 擦除", "墙壁", "目标点", "箱子", "玩家" };
-            for (int i = 0; i < labels.Length; i++)
-                if (Button(new Rect(858 + (i % 2) * 182, 310 + (i / 2) * 48, 170, 39), labels[i], tool == i, !menu)) tool = i;
-            if (Button(new Rect(858, 474, 352, 48), "试玩这一关  →", true, !menu)) TestDraft();
-            if (Button(new Rect(858, 535, 170, 40), "保存到本机", false, !menu)) SaveDraft();
-            if (Button(new Rect(1040, 535, 170, 40), "读取保存", false, !menu)) LoadDraft();
-            Text(new Rect(858, 594, 349, 60), "试玩前检查出生点、箱子和目标点数量。是否能解开，需要你来验证。", 15, muted);
-            if (Button(new Rect(858, 673, 352, 32), "返回第 1 关（放弃未保存编辑）", false, !menu)) LoadLevel(0);
+            catch (Exception e) { fileError = e.Message; }
         }
 
         void DrawBoard(Rect area)
@@ -292,7 +440,8 @@ namespace Kuluo.Sokoban
                         Fill(new Rect(tile.x + 3, tile.y + 3, cell - 6, cell - 12), Hex("496174"));
                         Fill(new Rect(tile.x + 7, tile.y + 6, cell - 14, 3), Hex("658092"));
                     }
-                    else if (c == '.' || c == '*' || c == '+')
+                    else DrawTerrain(tile, data.TerrainAt(x, y), !editing && board.DoorsOpen, !editing && (board.Player == new Vector2Int(x, y) || board.Boxes.Contains(new Vector2Int(x, y))));
+                    if (c == '.' || c == '*' || c == '+')
                     {
                         Fill(Inset(tile, cell * .19f), Hex("365F5D"));
                         Fill(Inset(tile, cell * .27f), mint);
@@ -303,9 +452,8 @@ namespace Kuluo.Sokoban
                     {
                         if (c == '$' || c == '*') DrawBox(tile, c == '*');
                         if (c == '@' || c == '+') DrawPlayer(tile);
-                        if (!menu && tile.Contains(Event.current.mousePosition))
+                        if (!OverlayOpen && tile.Contains(Event.current.mousePosition))
                         {
-                            Fill(Inset(tile, 2), new Color(1, 1, 1, .12f));
                             if ((Event.current.type == EventType.MouseDown || Event.current.type == EventType.MouseDrag) && Event.current.button <= 1)
                             {
                                 Paint(x, y, Event.current.button == 1);
@@ -316,7 +464,7 @@ namespace Kuluo.Sokoban
                 }
             if (!editing)
             {
-                float t = Mathf.SmoothStep(0, 1, Mathf.Clamp01((Time.unscaledTime - moveTime) / .105f));
+                float t = Mathf.SmoothStep(0, 1, Mathf.Clamp01((Time.unscaledTime - moveTime) / moveDuration));
                 for (int i = 0; i < board.Boxes.Count; i++)
                 {
                     Vector2 p = Vector2.Lerp(fromBoxes[i], board.Boxes[i], t);
@@ -324,6 +472,31 @@ namespace Kuluo.Sokoban
                 }
                 Vector2 robot = Vector2.Lerp(fromPlayer, board.Player, t);
                 DrawPlayer(new Rect(left + robot.x * cell, top + robot.y * cell, cell, cell));
+            }
+        }
+
+        void DrawTerrain(Rect tile, char kind, bool open, bool occupied = false)
+        {
+            float c = tile.width;
+            if (kind == 'I')
+            {
+                Fill(Inset(tile, 3), Hex("376D89"));
+                Fill(new Rect(tile.x + c * .16f, tile.y + c * .22f, c * .52f, c * .055f), Hex("9ADCF4"));
+                Fill(new Rect(tile.x + c * .35f, tile.y + c * .67f, c * .47f, c * .045f), Hex("71B8D5"));
+            }
+            if (kind == 'S')
+            {
+                Fill(Inset(tile, c * .09f), Hex("62507C"));
+                Fill(Inset(tile, c * .15f), open ? Hex("D4ACF2") : Hex("A680C4"));
+                Fill(Inset(tile, c * .22f), Hex("413C59"));
+            }
+            if (kind == 'D')
+            {
+                Color color = Hex("C7A0E8");
+                Fill(new Rect(tile.x + c * .08f, tile.y + c * .08f, c * .1f, c * .84f), color);
+                Fill(new Rect(tile.x + c * .82f, tile.y + c * .08f, c * .1f, c * .84f), color);
+                if (!open && !occupied)
+                    for (int i = 0; i < 3; i++) Fill(new Rect(tile.x + c * .2f, tile.y + c * (.2f + i * .25f), c * .6f, c * .10f), color);
             }
         }
 
@@ -349,37 +522,14 @@ namespace Kuluo.Sokoban
             Text(tile, "P", Mathf.RoundToInt(c * .32f), background, true, TextAnchor.MiddleCenter);
         }
 
-        void DrawMenu()
-        {
-            Fill(new Rect(0, 0, 1280, 800), new Color(.025f, .06f, .10f, .91f));
-            Fill(new Rect(410, 192, 460, 420), panel);
-            Text(new Rect(450, 225, 380, 48), "休息一下", 34, ink, true);
-            Text(new Rect(450, 286, 380, 38), "随时继续测试。", 18, muted);
-            if (Button(new Rect(450, 350, 380, 51), "继续  /  Esc", true)) menu = false;
-            if (Button(new Rect(450, 418, 380, 47), "地图编辑器")) OpenEditor();
-            if (Button(new Rect(450, 481, 380, 47), "返回第 1 关")) LoadLevel(0);
-            Text(new Rect(450, 552, 380, 28), "推箱子原型 · Unity Demo", 14, muted);
-        }
-
-        bool Button(Rect rect, string label, bool accent = false, bool enabled = true)
-        {
-            bool hover = rect.Contains(Event.current.mousePosition) && enabled;
-            Color color = accent ? mint : hover ? Hex("3C586B") : Hex("2B4255");
-            if (!enabled) color = Hex("223445");
-            Fill(rect, color);
-            Text(Inset(rect, 6), label, 16, enabled ? accent ? background : ink : Hex("627788"), accent, TextAnchor.MiddleCenter);
-            bool old = GUI.enabled;
-            GUI.enabled = enabled;
-            bool clicked = GUI.Button(rect, GUIContent.none, GUIStyle.none);
-            GUI.enabled = old;
-            return clicked;
-        }
-
         void Text(Rect rect, string value, int size, Color color, bool bold = false, TextAnchor anchor = TextAnchor.UpperLeft)
         {
             textStyle.fontSize = size;
             textStyle.fontStyle = bold ? FontStyle.Bold : FontStyle.Normal;
-            textStyle.normal.textColor = color;
+            // Unity's default label hover color must not change passive text.
+            foreach (var state in new[] { textStyle.normal, textStyle.hover, textStyle.active, textStyle.focused,
+                textStyle.onNormal, textStyle.onHover, textStyle.onActive, textStyle.onFocused })
+            { state.textColor = color; state.background = null; }
             textStyle.alignment = anchor;
             GUI.Label(rect, value, textStyle);
         }
@@ -393,7 +543,7 @@ namespace Kuluo.Sokoban
         }
         static Rect Inset(Rect r, float amount) => new Rect(r.x + amount, r.y + amount, r.width - amount * 2, r.height - amount * 2);
         static Color Hex(string hex) { ColorUtility.TryParseHtmlString("#" + hex, out Color c); return c; }
-        void Play(AudioClip clip) { if (!mutedAudio) speaker.PlayOneShot(clip, .16f); }
+        void Play(AudioClip clip) { if (clip != null && effectsVolume > 0) speaker.PlayOneShot(clip, effectsVolume * .25f); }
         static AudioClip Tone(string name, float frequency, float duration)
         {
             const int rate = 22050;
