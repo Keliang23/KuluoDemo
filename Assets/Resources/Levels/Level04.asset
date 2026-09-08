@@ -1,0 +1,35 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 72a49ba51c7c85848b6d50a766acf246, type: 3}
+  m_Name: Level04
+  m_EditorClassIdentifier: 
+  order: 3
+  lesson: "\u51B0\u9762\u6ED1\u884C"
+  data:
+    title: "\u6ED1\u5230\u54EA\u91CC\uFF1F"
+    hint: "\u7BB1\u5B50\u5728\u51B0\u9762\u4E0A\u4F1A\u4E00\u76F4\u6ED1\uFF0C\u79BB\u5F00\u51B0\u9762\u6216\u9047\u5230\u969C\u788D\u624D\u505C\u4E0B\u3002\u73A9\u5BB6\u6B63\u5E38\u884C\u8D70\u3002"
+    rows:
+    - '#########'
+    - '#     . #'
+    - '# $    ##'
+    - '#  ## . #'
+    - '# $     #'
+    - '#@      #'
+    - '#########'
+    terrain:
+    - '         '
+    - '         '
+    - '   IIII  '
+    - '         '
+    - '   III   '
+    - '         '
+    - '         '

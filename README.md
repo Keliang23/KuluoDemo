@@ -22,3 +22,16 @@
 左键绘制，右键擦除，Ctrl + Z 撤销编辑。支持保存草稿和一键试玩；返回编辑时保留原始布局。关卡和进度保存在本机。
 
 箱子进入冰面会滑到普通地板或障碍前；玩家不滑行。玩家或箱子压住压力板时所有门打开，松开后关闭，门上的物体可以离开。新版关卡使用独立进度文件，旧记录与自定义地图保留。
+
+## 在 Unity 中继续制作
+
+界面使用 uGUI + TextMeshPro，地图使用 Tilemap 和预制体，无需运行就能查看和调整。
+
+- **界面布局**：展开场景中的 `Canvas / UIRoot / Content`。页面与弹窗预制体在 `Assets/Sokoban/UI`。可修改 Rect Transform、文字和按钮样式；对象名称用于交互绑定，请保留。
+- **物件外观**：编辑 `Assets/Sokoban/Pieces` 中的玩家、箱子、目标、压板和门预制体。地板、墙和冰面资源在 `Assets/Sokoban/Tiles`。
+- **关卡设计**：选择 `Assets/Resources/Levels` 中的关卡，在 Inspector 中修改名称、提示或点击格子绘图。已有存档按关卡顺序记录，修改顺序时请留意。
+- **场景中摆地图**：在关卡 Inspector 点击「Preview in Scene」，可移动/复制 `Board / Pieces` 下的物件或修改 Tilemap。格子中心为 `(x + 0.5, -y - 0.5)`；完成后选择 Board，点击「Save Scene Layout To Level」。尺寸在关卡资源中调整。
+
+修改请在停止运行时进行，并保存场景或应用预制体修改。运行时的物件位置来自关卡数据；外观来自预制体。游戏内地图编辑器和旧存档继续可用。
+
+验证入口：`Tools / Sokoban / Validate Editable UI`，包括关卡求解和界面交互回归，测试存档写入独立临时目录。

@@ -187,8 +187,22 @@ namespace Kuluo.Sokoban
 
     public static class DemoLevels
     {
-        public static readonly string[] Lessons = { "基础移动", "多目标", "推动顺序", "冰面滑行", "压力板开门", "综合 · 借箱停靠", "综合 · 分路协作" };
-        public static readonly LevelData[] All =
+        static LevelData[] loaded;
+        static string[] lessons;
+        public static LevelData[] All { get { Load(); return loaded; } }
+        public static string[] Lessons { get { Load(); return lessons; } }
+        public static void Reload() { loaded = null; lessons = null; }
+        static void Load()
+        {
+            if (loaded != null) return;
+            var assets = Resources.LoadAll<SokobanLevel>("Levels");
+            Array.Sort(assets, (a, b) => a.order.CompareTo(b.order));
+            if (assets.Length == 0) { loaded = Seeds; lessons = SeedLessons; return; }
+            loaded = new LevelData[assets.Length]; lessons = new string[assets.Length];
+            for (int i = 0; i < assets.Length; i++) { loaded[i] = assets[i].data.Copy(); lessons[i] = assets[i].lesson; }
+        }
+        public static readonly string[] SeedLessons = { "基础移动", "多目标", "推动顺序", "冰面滑行", "压力板开门", "综合  借箱停靠", "综合  分路协作" };
+        public static readonly LevelData[] Seeds =
         {
             new LevelData {
                 title = "第一步", hint = "把箱子推到绿色目标点。只能推，不能拉。",

@@ -7,11 +7,8 @@ namespace Kuluo.Sokoban
 {
     public partial class SokobanDemo : MonoBehaviour
     {
-        const float CanvasWidth = 1280, CanvasHeight = 800;
         enum Page { Menu, Home, Play, Library, Editor }
         Page page = Page.Menu;
-        readonly Color background = Hex("101C29"), panel = Hex("192A3B"), muted = Hex("96ABBD");
-        readonly Color ink = Hex("EAF2F5"), mint = Hex("69DFC0"), gold = Hex("F2BD69");
         readonly Stack<BoardState.Snapshot> history = new Stack<BoardState.Snapshot>();
         readonly List<LevelData> editorUndo = new List<LevelData>();
         BoardState board;
@@ -27,13 +24,10 @@ namespace Kuluo.Sokoban
         Vector2Int heldDirection;
         Vector2 fromPlayer;
         Vector2Int[] fromBoxes;
-        Font font;
-        Texture2D playerIcon;
-        GUIStyle textStyle, fieldStyle;
         AudioSource speaker;
         AudioSource music;
         AudioClip buttonClip;
-        bool settingsOpen, effectsPreviewPending;
+        bool settingsOpen;
         float musicVolume, effectsVolume;
         AudioClip stepClip, pushClip, winClip;
         Action confirmAction, discardAction;
@@ -41,18 +35,12 @@ namespace Kuluo.Sokoban
         bool filePicker, exporting;
         string directoryText, filename = "level.json", fileError = "";
         string[] folders = new string[0], files = new string[0];
-        Vector2 fileScroll;
         bool OverlayOpen => settingsOpen || menu || confirmAction != null || discardAction != null || filePicker;
 
         void Awake()
         {
+            DemoLevels.Reload();
             Application.targetFrameRate = 60;
-            font = Font.CreateDynamicFontFromOSFont(new[] { "Microsoft YaHei", "Noto Sans CJK SC", "Arial" }, 24);
-            playerIcon = new Texture2D(64, 64, TextureFormat.RGBA32, false);
-            for (int y = 0; y < 64; y++)
-                for (int x = 0; x < 64; x++)
-                    playerIcon.SetPixel(x, y, new Color(1, 1, 1, Mathf.Clamp01(31 - Vector2.Distance(new Vector2(x, y), new Vector2(31.5f, 31.5f)))));
-            playerIcon.Apply();
             speaker = gameObject.AddComponent<AudioSource>();
             speaker.playOnAwake = false;
             stepClip = Tone("step", 330, .055f);
@@ -84,6 +72,7 @@ namespace Kuluo.Sokoban
             current = DemoLevels.All[0].Copy();
             ResetBoard();
             page = Page.Menu;
+            BindUI();
         }
 
         void Update()
@@ -101,7 +90,7 @@ namespace Kuluo.Sokoban
                 else Go(Page.Menu);
                 return;
             }
-            if (OverlayOpen) return;
+            if (OverlayOpen || IsTyping()) return;
             if (page == Page.Editor)
             {
                 if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.Z)) UndoEdit();
@@ -168,7 +157,6 @@ namespace Kuluo.Sokoban
         void CloseSettings()
         {
             settingsOpen = false;
-            effectsPreviewPending = false;
             SaveAudioSettings();
         }
 
@@ -382,7 +370,6 @@ namespace Kuluo.Sokoban
                 directoryText = path;
                 folders = foundFolders;
                 files = foundFiles;
-                fileScroll = Vector2.zero;
                 fileError = "";
             }
             catch (Exception e) { folders = files = new string[0]; fileError = "无法打开文件夹：" + e.Message; }
@@ -421,128 +408,6 @@ namespace Kuluo.Sokoban
             catch (Exception e) { fileError = e.Message; }
         }
 
-        void DrawBoard(Rect area)
-        {
-            LevelData data = editing ? draft : current;
-            int width = data.rows[0].Length, height = data.rows.Length;
-            float cell = Mathf.Min(area.width / width, area.height / height, 74);
-            float left = area.x + (area.width - width * cell) / 2;
-            float top = area.y + (area.height - height * cell) / 2;
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++)
-                {
-                    char c = data.rows[y][x];
-                    var tile = new Rect(left + x * cell, top + y * cell, cell, cell);
-                    Fill(Inset(tile, 2), (x + y) % 2 == 0 ? Hex("233A4B") : Hex("263E50"));
-                    if (c == '#')
-                    {
-                        Fill(new Rect(tile.x + 3, tile.y + 8, cell - 6, cell - 10), Hex("102130"));
-                        Fill(new Rect(tile.x + 3, tile.y + 3, cell - 6, cell - 12), Hex("496174"));
-                        Fill(new Rect(tile.x + 7, tile.y + 6, cell - 14, 3), Hex("658092"));
-                    }
-                    else DrawTerrain(tile, data.TerrainAt(x, y), !editing && board.DoorsOpen, !editing && (board.Player == new Vector2Int(x, y) || board.Boxes.Contains(new Vector2Int(x, y))));
-                    if (c == '.' || c == '*' || c == '+')
-                    {
-                        Fill(Inset(tile, cell * .19f), Hex("365F5D"));
-                        Fill(Inset(tile, cell * .27f), mint);
-                        Fill(Inset(tile, cell * .32f), Hex("233A4B"));
-                        Fill(Inset(tile, cell * .43f), mint);
-                    }
-                    if (editing)
-                    {
-                        if (c == '$' || c == '*') DrawBox(tile, c == '*');
-                        if (c == '@' || c == '+') DrawPlayer(tile);
-                        if (!OverlayOpen && tile.Contains(Event.current.mousePosition))
-                        {
-                            if ((Event.current.type == EventType.MouseDown || Event.current.type == EventType.MouseDrag) && Event.current.button <= 1)
-                            {
-                                Paint(x, y, Event.current.button == 1);
-                                Event.current.Use();
-                            }
-                        }
-                    }
-                }
-            if (!editing)
-            {
-                float t = Mathf.SmoothStep(0, 1, Mathf.Clamp01((Time.unscaledTime - moveTime) / moveDuration));
-                for (int i = 0; i < board.Boxes.Count; i++)
-                {
-                    Vector2 p = Vector2.Lerp(fromBoxes[i], board.Boxes[i], t);
-                    DrawBox(new Rect(left + p.x * cell, top + p.y * cell, cell, cell), board.Goals.Contains(board.Boxes[i]));
-                }
-                Vector2 robot = Vector2.Lerp(fromPlayer, board.Player, t);
-                DrawPlayer(new Rect(left + robot.x * cell, top + robot.y * cell, cell, cell));
-            }
-        }
-
-        void DrawTerrain(Rect tile, char kind, bool open, bool occupied = false)
-        {
-            float c = tile.width;
-            if (kind == 'I')
-            {
-                Fill(Inset(tile, 3), Hex("376D89"));
-                Fill(new Rect(tile.x + c * .16f, tile.y + c * .22f, c * .52f, c * .055f), Hex("9ADCF4"));
-                Fill(new Rect(tile.x + c * .35f, tile.y + c * .67f, c * .47f, c * .045f), Hex("71B8D5"));
-            }
-            if (kind == 'S')
-            {
-                Fill(Inset(tile, c * .09f), Hex("62507C"));
-                Fill(Inset(tile, c * .15f), open ? Hex("D4ACF2") : Hex("A680C4"));
-                Fill(Inset(tile, c * .22f), Hex("413C59"));
-            }
-            if (kind == 'D')
-            {
-                Color color = Hex("C7A0E8");
-                Fill(new Rect(tile.x + c * .08f, tile.y + c * .08f, c * .1f, c * .84f), color);
-                Fill(new Rect(tile.x + c * .82f, tile.y + c * .08f, c * .1f, c * .84f), color);
-                if (!open && !occupied)
-                    for (int i = 0; i < 3; i++) Fill(new Rect(tile.x + c * .2f, tile.y + c * (.2f + i * .25f), c * .6f, c * .10f), color);
-            }
-        }
-
-        void DrawBox(Rect tile, bool docked)
-        {
-            float c = tile.width;
-            Fill(new Rect(tile.x + c * .14f, tile.y + c * .23f, c * .72f, c * .66f), Hex("142633"));
-            var box = new Rect(tile.x + c * .14f, tile.y + c * .12f, c * .72f, c * .67f);
-            Fill(box, docked ? Hex("438F7C") : Hex("B87938"));
-            Fill(Inset(box, c * .07f), docked ? mint : gold);
-            Fill(new Rect(tile.x + c * .44f, tile.y + c * .18f, c * .12f, c * .55f), docked ? Hex("438F7C") : Hex("B87938"));
-            Fill(new Rect(tile.x + c * .22f, tile.y + c * .42f, c * .56f, c * .09f), docked ? Hex("438F7C") : Hex("B87938"));
-            Fill(new Rect(tile.x + c * .42f, tile.y + c * .38f, c * .16f, c * .17f), Hex("F7E5B9"));
-        }
-
-        void DrawPlayer(Rect tile)
-        {
-            float c = tile.width;
-            Color previous = GUI.color;
-            GUI.color = Hex("83CBF1");
-            GUI.DrawTexture(Inset(tile, c * .19f), playerIcon);
-            GUI.color = previous;
-            Text(tile, "P", Mathf.RoundToInt(c * .32f), background, true, TextAnchor.MiddleCenter);
-        }
-
-        void Text(Rect rect, string value, int size, Color color, bool bold = false, TextAnchor anchor = TextAnchor.UpperLeft)
-        {
-            textStyle.fontSize = size;
-            textStyle.fontStyle = bold ? FontStyle.Bold : FontStyle.Normal;
-            // Unity's default label hover color must not change passive text.
-            foreach (var state in new[] { textStyle.normal, textStyle.hover, textStyle.active, textStyle.focused,
-                textStyle.onNormal, textStyle.onHover, textStyle.onActive, textStyle.onFocused })
-            { state.textColor = color; state.background = null; }
-            textStyle.alignment = anchor;
-            GUI.Label(rect, value, textStyle);
-        }
-
-        static void Fill(Rect rect, Color color)
-        {
-            Color previous = GUI.color;
-            GUI.color = color;
-            GUI.DrawTexture(rect, Texture2D.whiteTexture);
-            GUI.color = previous;
-        }
-        static Rect Inset(Rect r, float amount) => new Rect(r.x + amount, r.y + amount, r.width - amount * 2, r.height - amount * 2);
-        static Color Hex(string hex) { ColorUtility.TryParseHtmlString("#" + hex, out Color c); return c; }
         void Play(AudioClip clip) { if (clip != null && effectsVolume > 0) speaker.PlayOneShot(clip, effectsVolume * .25f); }
         static AudioClip Tone(string name, float frequency, float duration)
         {
@@ -560,8 +425,6 @@ namespace Kuluo.Sokoban
 
         void OnDestroy()
         {
-            if (font != null) Destroy(font);
-            if (playerIcon != null) Destroy(playerIcon);
             if (stepClip != null) Destroy(stepClip);
             if (pushClip != null) Destroy(pushClip);
             if (winClip != null) Destroy(winClip);
